@@ -93,20 +93,29 @@ app.get('/slack/oauth_redirect', async (req, res) => {
   }
 });
 
-// Slash command handler
-app.post('/slack/commands', verifySlackRequest, async (req, res) => {
-  console.log('Slash command received:', req.body.command);
-  const { command, text, team_id, user_id, channel_id, response_url } = req.body;
-  const token = tokenStore.get(team_id);
+// All Slack interactions go through /slack/events
+app.post('/slack/events', verifySlackRequest, async (req, res) => {
+  const { type, challenge, command, text, team_id, user_id, channel_id, response_url } = req.body;
 
-  console.log('Team ID:', team_id, 'Token exists:', !!token);
-
-  if (!token) {
-    console.log('No token found for team:', team_id);
-    return res.status(403).send('Bot not installed for this workspace');
+  // Slack URL verification
+  if (type === 'url_verification') {
+    console.log('Slack verification received');
+    return res.status(200).json({ challenge });
   }
 
-  res.status(200).send('');
+  // Handle slash commands
+  if (type === 'command' || command) {
+    console.log('Slash command received:', command);
+    const token = tokenStore.get(team_id);
+
+    console.log('Team ID:', team_id, 'Token exists:', !!token);
+
+    if (!token) {
+      console.log('No token found for team:', team_id);
+      return res.status(403).json({ error: 'Bot not installed for this workspace' });
+    }
+
+    res.status(200).json({ ok: true });
 
   try {
     if (command === '/pipeline-summary') {
@@ -276,6 +285,13 @@ async function sendSlackMessage(responseUrl, text) {
 // Health check
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'OK' });
+});
+
+// Debug endpoint - test if Slack can reach us
+app.post('/slack/commands/test', (req, res) => {
+  console.log('TEST endpoint hit');
+  console.log('Body:', req.body);
+  res.status(200).json({ ok: true, message: 'Test received' });
 });
 
 // Start server
