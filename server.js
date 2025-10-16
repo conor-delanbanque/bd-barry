@@ -4,22 +4,23 @@ const dotenv = require('dotenv');
 
 dotenv.config();
 
+console.log('🔧 Starting BD Barry initialization...');
+console.log('Token exists:', !!process.env.SLACK_BOT_TOKEN);
+console.log('Signing secret exists:', !!process.env.SLACK_SIGNING_SECRET);
+
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
   signingSecret: process.env.SLACK_SIGNING_SECRET,
-  endpoints: {
-    events: '/slack/events',
-    commands: '/slack/commands'
-  }
 });
+
+console.log('✅ Bolt App created successfully');
 
 const HUBSPOT_TOKEN = process.env.HUBSPOT_TOKEN;
 
 // /pipeline-summary command
 app.command('/pipeline-summary', async ({ ack, respond }) => {
-  console.log('>>> /pipeline-summary command received');
+  // ACKNOWLEDGE IMMEDIATELY
   await ack();
-  console.log('>>> Command acknowledged');
 
   if (!HUBSPOT_TOKEN) {
     await respond('HubSpot token not configured.');
@@ -154,7 +155,9 @@ app.command('/follow-up', async ({ ack, respond, command }) => {
 
 // Start the app
 (async () => {
+  console.log('🚀 Starting Bolt app...');
   await app.start(process.env.PORT || 3000);
   console.log('⚡️ BD Barry is running on port', process.env.PORT || 3000);
-  console.log('Listening on /slack/events');
+  console.log('📍 Listening on /slack/events');
+  console.log('✅ Ready for slash commands');
 })();
