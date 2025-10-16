@@ -145,7 +145,7 @@ app.command('/add-note', async ({ ack, respond, command }) => {
 });
 
 // /follow-up command
-app.command('/follow-up', async ({ ack, respond, command }) => {
+app.command('/follow-up', async ({ ack, respond, command, client }) => {
   await ack();
 
   const parts = command.text.split(' ');
@@ -157,12 +157,26 @@ app.command('/follow-up', async ({ ack, respond, command }) => {
     return;
   }
 
-  const followUpDate = new Date();
-  followUpDate.setDate(followUpDate.getDate() + days);
+  try {
+    const followUpDate = new Date();
+    followUpDate.setDate(followUpDate.getDate() + days);
 
-  await respond(
-    `📅 Follow-up reminder set for ${email}\nScheduled: ${followUpDate.toDateString()}`
-  );
+    // Convert to Unix timestamp (seconds) for Slack
+    const unixTimestamp = Math.floor(followUpDate.getTime() / 1000);
+
+    // Create Slack reminder
+    await client.reminders.add({
+      text: `Follow up with ${email}`,
+      time: unixTimestamp,
+    });
+
+    await respond(
+      `📅 Slack reminder set for ${email}\nScheduled: ${followUpDate.toDateString()}`
+    );
+  } catch (error) {
+    console.error('Error setting reminder:', error.message);
+    await respond(`❌ Error setting reminder: ${error.message}`);
+  }
 });
 
 // Start the app
