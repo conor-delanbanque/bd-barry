@@ -1,137 +1,22 @@
-const express = require('express');
-const bodyParser = require('body-parser');
+const { App } = require('@slack/bolt');
 const axios = require('axios');
 const dotenv = require('dotenv');
-const crypto = require('crypto');
 
 dotenv.config();
 
-const app = express();
+const app = new App({
+  token: process.env.SLACK_BOT_TOKEN,
+  signingSecret: process.env.SLACK_SIGNING_SECRET,
+});
 
-// Parse both JSON and URL-encoded form data
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
-
-// Environment variables
-const SLACK_CLIENT_ID = process.env.SLACK_CLIENT_ID;
-const SLACK_CLIENT_SECRET = process.env.SLACK_CLIENT_SECRET;
-const SLACK_SIGNING_SECRET = process.env.SLACK_SIGNING_SECRET;
 const HUBSPOT_TOKEN = process.env.HUBSPOT_TOKEN;
-const REDIRECT_URL = process.env.REDIRECT_URL;
-const PORT = process.env.PORT || 3000;
 
-// In-memory store for tokens
-const tokenStore = new Map();
+// /pipeline-summary command
+app.command('/pipeline-summary', async ({ ack, respond }) => {
+  await ack();
 
-// Slack request verification middleware
-const verifySlackRequest = (req, res, next) => {
-  const timestamp = req.headers['x-slack-request-timestamp'];
-  const signature = req.headers['x-slack-signature'];
-
-  if (!timestamp || !signature) {
-    return res.status(400).send('Missing timestamp or signature');
-  }
-
-  const time = Math.floor(Date.now() / 1000);
-  if (Math.abs(time - timestamp) > 300) {
-    return res.status(400).send('Request timestamp out of range');
-  }
-
-  const baseString = `v0:${timestamp}:${JSON.stringify(req.body)}`;
-  const computedSig = `v0=${crypto
-    .createHmac('sha256', SLACK_SIGNING_SECRET)
-    .update(baseString)
-    .digest('hex')}`;
-
-  if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(computedSig))) {
-    return res.status(401).send('Invalid signature');
-  }
-
-  next();
-};
-
-// OAuth2.0 redirect handler
-app.get('/slack/oauth_redirect', async (req, res) => {
-  const code = req.query.code;
-
-  if (!code) {
-    return res.status(400).send('Missing authorization code');
-  }
-
-  try {
-    const response = await axios.post('https://slack.com/api/oauth.v2.access', null, {
-      params: {
-        client_id: SLACK_CLIENT_ID,
-        client_secret: SLACK_CLIENT_SECRET,
-        code,
-        redirect_uri: `${REDIRECT_URL}/slack/oauth_redirect`,
-      },
-    });
-
-    if (!response.data.ok) {
-      return res.status(400).send(`OAuth failed: ${response.data.error}`);
-    }
-
-    const { team_id, access_token } = response.data;
-    tokenStore.set(team_id, access_token);
-
-    res.send(`
-      <html>
-        <body style="font-family: Arial; text-align: center; padding: 50px;">
-          <h1>✅ BD Barry installed successfully!</h1>
-          <p>You can now use the bot in your Slack workspace.</p>
-          <p>Try these commands:</p>
-          <ul>
-            <li><code>/pipeline-summary</code> - Get a summary of active deals</li>
-            <li><code>/add-note [contact-email] [note text]</code> - Add a note to a contact</li>
-            <li><code>/follow-up [contact-email] [days]</code> - Set a follow-up reminder</li>
-          </ul>
-          <p>Close this window and go back to Slack.</p>
-        </body>
-      </html>
-    `);
-  } catch (error) {
-    console.error('OAuth error:', error.message);
-    res.status(500).send(`OAuth error: ${error.message}`);
-  }
-});
-
-// Slash command handler
-app.post('/slack/commands', verifySlackRequest, async (req, res) => {
-  const { command, text, team_id, user_id, response_url } = req.body;
-
-  console.log('Slash command received:', command, 'text:', text);
-
-  const token = tokenStore.get(team_id);
-
-  if (!token) {
-    console.log('No token found for team:', team_id);
-    return res.status(200).json({ text: 'Bot not installed for this workspace' });
-  }
-
-  res.status(200).send('');
-
-  try {
-    if (command === '/pipeline-summary') {
-      await handlePipelineSummary(response_url, team_id, user_id);
-    } else if (command === '/add-note') {
-      await handleAddNote(response_url, text, team_id);
-    } else if (command === '/follow-up') {
-      await handleFollowUp(response_url, text, team_id, user_id);
-    }
-  } catch (error) {
-    console.error(`Error handling ${command}:`, error.message);
-    await sendSlackMessage(response_url, `❌ Error: ${error.message}`);
-  }
-});
-
-// Handler: /pipeline-summary
-async function handlePipelineSummary(responseUrl, teamId, userId) {
   if (!HUBSPOT_TOKEN) {
-    await sendSlackMessage(
-      responseUrl,
-      'HubSpot token not configured. Contact your admin.'
-    );
+    await respond('HubSpot token not configured.');
     return;
   }
 
@@ -147,7 +32,7 @@ async function handlePipelineSummary(responseUrl, teamId, userId) {
     const deals = response.data.results;
 
     if (deals.length === 0) {
-      await sendSlackMessage(responseUrl, 'No active deals found.');
+      await respond('No active deals found.');
       return;
     }
 
@@ -160,31 +45,28 @@ async function handlePipelineSummary(responseUrl, teamId, userId) {
       message += `   Close Date: ${props.closedate || 'N/A'}\n\n`;
     });
 
-    await sendSlackMessage(responseUrl, message);
+    await respond(message);
   } catch (error) {
-    throw new Error(`Failed to fetch pipeline: ${error.message}`);
+    console.error('Error fetching pipeline:', error.message);
+    await respond(`❌ Error: ${error.message}`);
   }
-}
+});
 
-// Handler: /add-note
-async function handleAddNote(responseUrl, text, teamId) {
+// /add-note command
+app.command('/add-note', async ({ ack, respond, command }) => {
+  await ack();
+
   if (!HUBSPOT_TOKEN) {
-    await sendSlackMessage(
-      responseUrl,
-      'HubSpot token not configured. Contact your admin.'
-    );
+    await respond('HubSpot token not configured.');
     return;
   }
 
-  const parts = text.split(' ');
+  const parts = command.text.split(' ');
   const email = parts[0];
   const noteText = parts.slice(1).join(' ');
 
   if (!email || !noteText) {
-    await sendSlackMessage(
-      responseUrl,
-      '❌ Usage: `/add-note [contact-email] [note text]`'
-    );
+    await respond('❌ Usage: `/add-note [contact-email] [note text]`');
     return;
   }
 
@@ -212,7 +94,7 @@ async function handleAddNote(responseUrl, text, teamId) {
 
     const contacts = searchResponse.data.results;
     if (contacts.length === 0) {
-      await sendSlackMessage(responseUrl, `❌ Contact with email ${email} not found.`);
+      await respond(`❌ Contact with email ${email} not found.`);
       return;
     }
 
@@ -236,52 +118,36 @@ async function handleAddNote(responseUrl, text, teamId) {
       }
     );
 
-    await sendSlackMessage(
-      responseUrl,
-      `✅ Note added to ${email}:\n"${noteText}"`
-    );
+    await respond(`✅ Note added to ${email}:\n"${noteText}"`);
   } catch (error) {
-    throw new Error(`Failed to add note: ${error.message}`);
+    console.error('Error adding note:', error.message);
+    await respond(`❌ Error: ${error.message}`);
   }
-}
+});
 
-// Handler: /follow-up
-async function handleFollowUp(responseUrl, text, teamId, userId) {
-  const parts = text.split(' ');
+// /follow-up command
+app.command('/follow-up', async ({ ack, respond, command }) => {
+  await ack();
+
+  const parts = command.text.split(' ');
   const email = parts[0];
   const days = parseInt(parts[1]) || 1;
 
   if (!email || isNaN(days)) {
-    await sendSlackMessage(
-      responseUrl,
-      '❌ Usage: `/follow-up [contact-email] [days]`\nExample: `/follow-up john@example.com 3`'
-    );
+    await respond('❌ Usage: `/follow-up [contact-email] [days]`\nExample: `/follow-up john@example.com 3`');
     return;
   }
 
   const followUpDate = new Date();
   followUpDate.setDate(followUpDate.getDate() + days);
 
-  await sendSlackMessage(
-    responseUrl,
+  await respond(
     `📅 Follow-up reminder set for ${email}\nScheduled: ${followUpDate.toDateString()}`
   );
-}
-
-// Helper: Send message to Slack response URL
-async function sendSlackMessage(responseUrl, text) {
-  await axios.post(responseUrl, {
-    response_type: 'in_channel',
-    text,
-  });
-}
-
-// Health check
-app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'OK' });
 });
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`BD Barry running on port ${PORT}`);
-});
+// Start the app
+(async () => {
+  await app.start(process.env.PORT || 3000);
+  console.log('⚡️ BD Barry is running!');
+})();
