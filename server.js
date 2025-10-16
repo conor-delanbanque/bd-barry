@@ -1,235 +1,281 @@
-# BD Barry - Slack Bot Deployment Guide
+const express = require('express');
+const axios = require('axios');
+const dotenv = require('dotenv');
+const crypto = require('crypto');
 
-## Overview
-BD Barry is a Slack-native AI agent that helps CEOs manage sales pipelines, add contact notes, and set follow-up reminders via HubSpot integration.
+dotenv.config();
 
-**Commands:**
-- `/pipeline-summary` - Fetch active deals from HubSpot
-- `/add-note [email] [text]` - Add a note to a contact
-- `/follow-up [email] [days]` - Set a follow-up reminder
+const app = express();
+app.use(express.json());
 
----
+// Environment variables
+const SLACK_CLIENT_ID = process.env.SLACK_CLIENT_ID;
+const SLACK_CLIENT_SECRET = process.env.SLACK_CLIENT_SECRET;
+const SLACK_SIGNING_SECRET = process.env.SLACK_SIGNING_SECRET;
+const HUBSPOT_TOKEN = process.env.HUBSPOT_TOKEN;
+const REDIRECT_URL = process.env.REDIRECT_URL;
+const PORT = process.env.PORT || 3000;
 
-## Step 1: Create a Slack App (5 minutes)
+// In-memory store for tokens (use a database in production)
+const tokenStore = new Map();
 
-1. Go to https://api.slack.com/apps
-2. Click **"Create New App"** → **"From scratch"**
-3. **App name:** `BD Barry`
-4. **Workspace:** Select `strategiotech`
-5. Click **"Create App"**
+// Slack request verification middleware
+const verifySlackRequest = (req, res, next) => {
+  const timestamp = req.headers['x-slack-request-timestamp'];
+  const signature = req.headers['x-slack-signature'];
 
-### Configure OAuth & Permissions
+  if (!timestamp || !signature) {
+    return res.status(400).send('Missing timestamp or signature');
+  }
 
-6. In the left sidebar, click **"OAuth & Permissions"**
-7. Scroll to **"Redirect URLs"** → Click **"Add New Redirect URL"**
-8. Enter: `https://bd-barry.onrender.com/slack/oauth_redirect` (we'll update this after deployment)
-9. Click **"Save URLs"**
+  const time = Math.floor(Date.now() / 1000);
+  if (Math.abs(time - timestamp) > 300) {
+    return res.status(400).send('Request timestamp out of range');
+  }
 
-10. Scroll to **"Scopes"** → **"Bot Token Scopes"** → Click **"Add an OAuth Scope"**
-    - Add: `commands`, `chat:write`, `incoming-webhook`
-11. Click **"Save"**
+  const baseString = `v0:${timestamp}:${JSON.stringify(req.body)}`;
+  const computedSig = `v0=${crypto
+    .createHmac('sha256', SLACK_SIGNING_SECRET)
+    .update(baseString)
+    .digest('hex')}`;
 
-12. **Copy these values** (you'll need them in Step 3):
-    - **Client ID** (under "App Credentials")
-    - **Client Secret** (under "App Credentials")
-    - **Signing Secret** (under "App Credentials")
+  if (!crypto.timingSafeEqual(signature, computedSig)) {
+    return res.status(401).send('Invalid signature');
+  }
 
-### Enable Slash Commands
+  next();
+};
 
-13. In the left sidebar, click **"Slash Commands"** → **"Create New Command"**
-14. Create `/pipeline-summary`:
-    - **Command:** `/pipeline-summary`
-    - **Request URL:** `https://bd-barry.onrender.com/slack/commands`
-    - **Description:** `Get a summary of active deals`
-    - Click **"Save"**
+// OAuth2.0 redirect handler
+app.get('/slack/oauth_redirect', async (req, res) => {
+  const code = req.query.code;
+  const state = req.query.state;
 
-15. Repeat for `/add-note`:
-    - **Command:** `/add-note`
-    - **Request URL:** `https://bd-barry.onrender.com/slack/commands`
-    - **Description:** `Add a note to a contact`
+  if (!code) {
+    return res.status(400).send('Missing authorization code');
+  }
 
-16. Repeat for `/follow-up`:
-    - **Command:** `/follow-up`
-    - **Request URL:** `https://bd-barry.onrender.com/slack/commands`
-    - **Description:** `Set a follow-up reminder`
+  try {
+    const response = await axios.post('https://slack.com/api/oauth.v2.access', null, {
+      params: {
+        client_id: SLACK_CLIENT_ID,
+        client_secret: SLACK_CLIENT_SECRET,
+        code,
+        redirect_uri: `${REDIRECT_URL}/slack/oauth_redirect`,
+      },
+    });
 
-### Enable Events
+    if (!response.data.ok) {
+      return res.status(400).send(`OAuth failed: ${response.data.error}`);
+    }
 
-17. In the left sidebar, click **"Event Subscriptions"** → Toggle **"Enable Events"** ON
-18. **Request URL:** `https://bd-barry.onrender.com/slack/commands`
-19. Slack will verify the URL (it will fail now—that's OK, we'll fix it in Step 3)
-20. Click **"Save Changes"**
+    const { team_id, access_token, user_id } = response.data;
+    tokenStore.set(team_id, access_token);
 
----
+    res.send(`
+      <html>
+        <body style="font-family: Arial; text-align: center; padding: 50px;">
+          <h1>✅ BD Barry installed successfully!</h1>
+          <p>You can now use the bot in your Slack workspace.</p>
+          <p>Try these commands:</p>
+          <ul>
+            <li><code>/pipeline-summary</code> - Get a summary of active deals</li>
+            <li><code>/add-note [contact-email] [note text]</code> - Add a note to a contact</li>
+            <li><code>/follow-up [contact-email] [days]</code> - Set a follow-up reminder</li>
+          </ul>
+          <p>Close this window and go back to Slack.</p>
+        </body>
+      </html>
+    `);
+  } catch (error) {
+    console.error('OAuth error:', error.message);
+    res.status(500).send(`OAuth error: ${error.message}`);
+  }
+});
 
-## Step 2: Set Up Render Deployment (15 minutes)
+// Slash command handler
+app.post('/slack/commands', verifySlackRequest, async (req, res) => {
+  const { command, text, team_id, user_id, channel_id, response_url } = req.body;
+  const token = tokenStore.get(team_id);
 
-### Create Render Account & App
+  if (!token) {
+    return res.status(403).send('Bot not installed for this workspace');
+  }
 
-1. Go to https://render.com and sign up (free tier works)
-2. Click **"New +"** → **"Web Service"**
-3. Select **"Build and deploy from a Git repository"**
-4. Paste this GitHub repo URL: `https://github.com/your-repo-url` (see "GitHub Setup" below if you don't have one)
-5. **Name:** `bd-barry`
-6. **Environment:** `Node`
-7. **Build Command:** `npm install`
-8. **Start Command:** `node server.js`
-9. **Instance Type:** Free (fine for MVP)
-10. Click **"Create Web Service"**
+  res.status(200).send('');
 
-### Add Environment Variables to Render
+  try {
+    if (command === '/pipeline-summary') {
+      await handlePipelineSummary(response_url, team_id, user_id);
+    } else if (command === '/add-note') {
+      await handleAddNote(response_url, text, team_id);
+    } else if (command === '/follow-up') {
+      await handleFollowUp(response_url, text, team_id, user_id);
+    }
+  } catch (error) {
+    console.error(`Error handling ${command}:`, error.message);
+    await sendSlackMessage(response_url, `❌ Error: ${error.message}`);
+  }
+});
 
-11. In the Render dashboard for your app, go to **"Environment"**
-12. Add these variables:
-    ```
-    SLACK_CLIENT_ID=<paste from Slack app credentials>
-    SLACK_CLIENT_SECRET=<paste from Slack app credentials>
-    SLACK_SIGNING_SECRET=<paste from Slack app credentials>
-    const HUBSPOT_TOKEN = process.env.HUBSPOT_TOKEN;
-    REDIRECT_URL=https://bd-barry.onrender.com
-    PORT=3000
-    ```
-13. Click **"Save"**
+// Handler: /pipeline-summary
+async function handlePipelineSummary(responseUrl, teamId, userId) {
+  if (!HUBSPOT_TOKEN) {
+    await sendSlackMessage(
+      responseUrl,
+      'HubSpot token not configured. Contact your admin to set HUBSPOT_TOKEN.'
+    );
+    return;
+  }
 
-### Get Your Render URL
+  try {
+    const response = await axios.get('https://api.hubapi.com/crm/v3/objects/deals', {
+      headers: { Authorization: `Bearer ${HUBSPOT_TOKEN}` },
+      params: {
+        limit: 10,
+        properties: ['dealname', 'dealstage', 'amount', 'closedate'],
+      },
+    });
 
-14. Wait for the build to complete (2-3 minutes)
-15. Copy your app URL: `https://bd-barry.onrender.com` (shown at the top)
+    const deals = response.data.results;
 
----
+    if (deals.length === 0) {
+      await sendSlackMessage(responseUrl, 'No active deals found.');
+      return;
+    }
 
-## Step 3: Update Slack App with Render URL (5 minutes)
+    let message = '*📊 Pipeline Summary*\n\n';
+    deals.forEach((deal, idx) => {
+      const props = deal.properties;
+      message += `*${idx + 1}. ${props.dealname}*\n`;
+      message += `   Stage: ${props.dealstage}\n`;
+      message += `   Amount: $${props.amount || 'N/A'}\n`;
+      message += `   Close Date: ${props.closedate || 'N/A'}\n\n`;
+    });
 
-1. Go back to https://api.slack.com/apps → Select **BD Barry**
-2. Click **"OAuth & Permissions"**
-3. Update **"Redirect URLs"** to: `https://bd-barry.onrender.com/slack/oauth_redirect`
-4. Click **"Save URLs"**
-
-5. Click **"Slash Commands"** and edit each command:
-   - Update **Request URL** to: `https://bd-barry.onrender.com/slack/commands`
-   - Save each one
-
-6. Click **"Event Subscriptions"**
-   - Update **Request URL** to: `https://bd-barry.onrender.com/slack/commands`
-   - Slack will verify it (should now show a green checkmark ✓)
-   - Save
-
----
-
-## Step 4: Install BD Barry in Your Workspace (2 minutes)
-
-1. In the Slack app dashboard, click **"Install to Workspace"**
-2. Review permissions → Click **"Allow"**
-3. You should see: **"✅ BD Barry installed successfully!"**
-
----
-
-## Step 5: Test the Bot (5 minutes)
-
-In your Slack workspace (#general or any channel):
-
-### Test 1: Pipeline Summary
-```
-/pipeline-summary
-```
-Should return active deals from HubSpot, or an error if the token is misconfigured.
-
-### Test 2: Add Note
-```
-/add-note john@example.com Great meeting today, needs follow-up next week
-```
-Should confirm the note was added.
-
-### Test 3: Follow-up
-```
-/follow-up jane@example.com 3
-```
-Should set a reminder for 3 days from now.
-
----
-
-## Quick Reference: File Structure
-
-```
-bd-barry/
-├── server.js (the main backend code)
-├── package.json
-├── .env (your secrets - NEVER commit this)
-└── .gitignore (make sure .env is here)
-```
-
-### `package.json`
-```json
-{
-  "name": "bd-barry",
-  "version": "1.0.0",
-  "description": "Slack bot for sales pipeline management",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "express": "^4.18.2",
-    "axios": "^1.6.0",
-    "dotenv": "^16.3.1"
+    await sendSlackMessage(responseUrl, message);
+  } catch (error) {
+    throw new Error(`Failed to fetch pipeline: ${error.message}`);
   }
 }
-```
 
-### `.env` (keep locally, never commit)
-```
-SLACK_CLIENT_ID=your-client-id
-SLACK_CLIENT_SECRET=your-client-secret
-SLACK_SIGNING_SECRET=your-signing-secret
-pat-na1-XXXXXXXXXXXXXXXXXXXX
-REDIRECT_URL=https://bd-barry.onrender.com
-PORT=3000
-```
+// Handler: /add-note
+async function handleAddNote(responseUrl, text, teamId) {
+  if (!HUBSPOT_TOKEN) {
+    await sendSlackMessage(
+      responseUrl,
+      'HubSpot token not configured. Contact your admin.'
+    );
+    return;
+  }
 
----
+  const parts = text.split(' ');
+  const email = parts[0];
+  const noteText = parts.slice(1).join(' ');
 
-## Troubleshooting
+  if (!email || !noteText) {
+    await sendSlackMessage(
+      responseUrl,
+      '❌ Usage: `/add-note [contact-email] [note text]`'
+    );
+    return;
+  }
 
-### Bot not responding to slash commands
-- Check Render logs: **"Logs"** tab in Render dashboard
-- Verify slash commands are pointing to correct URL
-- Restart the service in Render
+  try {
+    const searchResponse = await axios.post(
+      'https://api.hubapi.com/crm/v3/objects/contacts/search',
+      {
+        filterGroups: [
+          {
+            filters: [
+              {
+                propertyName: 'email',
+                operator: 'EQ',
+                value: email,
+              },
+            ],
+          },
+        ],
+        limit: 1,
+      },
+      {
+        headers: { Authorization: `Bearer ${HUBSPOT_TOKEN}` },
+      }
+    );
 
-### OAuth redirect returning 404
-- Verify **Redirect URL** in Slack app matches Render URL exactly
-- Make sure Render app is running (green status)
+    const contacts = searchResponse.data.results;
+    if (contacts.length === 0) {
+      await sendSlackMessage(responseUrl, `❌ Contact with email ${email} not found.`);
+      return;
+    }
 
-### HubSpot integration not working
-- Test the token: `curl -H "Authorization: Bearer YOUR_TOKEN" https://api.hubapi.com/crm/v3/objects/deals`
-- Check Render logs for error messages
+    const contactId = contacts[0].id;
 
-### Slack signature verification failing
-- Verify `SLACK_SIGNING_SECRET` is correct in `.env`
-- Restart Render app after updating
+    await axios.post(
+      'https://api.hubapi.com/crm/v3/objects/notes',
+      {
+        properties: {
+          hs_note_body: noteText,
+        },
+        associations: [
+          {
+            types: [{ associationCategory: 'HUBSPOT_DEFINED', associationType: 'note_related_to_contact' }],
+            id: contactId,
+          },
+        ],
+      },
+      {
+        headers: { Authorization: `Bearer ${HUBSPOT_TOKEN}` },
+      }
+    );
 
----
+    await sendSlackMessage(
+      responseUrl,
+      `✅ Note added to ${email}:\n"${noteText}"`
+    );
+  } catch (error) {
+    throw new Error(`Failed to add note: ${error.message}`);
+  }
+}
 
-## Next Steps (Optional Enhancements)
+// Handler: /follow-up
+async function handleFollowUp(responseUrl, text, teamId, userId) {
+  const parts = text.split(' ');
+  const email = parts[0];
+  const days = parseInt(parts[1]) || 1;
 
-1. **Database:** Replace in-memory `tokenStore` with PostgreSQL or MongoDB
-2. **Scheduled reminders:** Set up a task queue (Bull, Agenda) to trigger follow-up reminders
-3. **Admin dashboard:** Add web UI to view pipeline and manage bot settings
-4. **Slack home tab:** Add interactive dashboard with deal summaries
-5. **Two-way sync:** Auto-update Slack messages when deals change in HubSpot
+  if (!email || isNaN(days)) {
+    await sendSlackMessage(
+      responseUrl,
+      '❌ Usage: `/follow-up [contact-email] [days]`\nExample: `/follow-up john@example.com 3`'
+    );
+    return;
+  }
 
----
+  const followUpDate = new Date();
+  followUpDate.setDate(followUpDate.getDate() + days);
 
-## Deployment Checklist
+  await sendSlackMessage(
+    responseUrl,
+    `📅 Follow-up reminder set for ${email}\nScheduled: ${followUpDate.toDateString()}\n\n_Note: In production, this would trigger an automated reminder._`
+  );
+}
 
-- [ ] Slack app created and configured
-- [ ] OAuth redirect URL set in Slack app
-- [ ] Slash commands created in Slack app
-- [ ] Render account created
-- [ ] Code deployed to Render
-- [ ] Environment variables set in Render
-- [ ] Render URL updated in Slack app
-- [ ] BD Barry installed in strategiotech workspace
-- [ ] `/pipeline-summary` tested
-- [ ] `/add-note` tested
-- [ ] `/follow-up` tested
-- [ ] Verify HubSpot integration works (check logs if not)
+// Helper: Send message to Slack response URL
+async function sendSlackMessage(responseUrl, text) {
+  await axios.post(responseUrl, {
+    response_type: 'in_channel',
+    text,
+  });
+}
+
+// Health check
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'OK' });
+});
+
+// Start server
+app.listen(PORT, () => {
+  console.log(`BD Barry running on port ${PORT}`);
+  console.log(`OAuth redirect: ${REDIRECT_URL}/slack/oauth_redirect`);
+});
