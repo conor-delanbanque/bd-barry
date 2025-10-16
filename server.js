@@ -6,7 +6,13 @@ const crypto = require('crypto');
 dotenv.config();
 
 const app = express();
-app.use(express.json());
+
+// Middleware to capture raw body for Slack signature verification
+app.use(express.json({
+  verify: (req, res, buf) => {
+    req.rawBody = buf.toString('utf8');
+  }
+}));
 
 // Environment variables
 const SLACK_CLIENT_ID = process.env.SLACK_CLIENT_ID;
@@ -33,7 +39,7 @@ const verifySlackRequest = (req, res, next) => {
     return res.status(400).send('Request timestamp out of range');
   }
 
-  const baseString = `v0:${timestamp}:${JSON.stringify(req.body)}`;
+  const baseString = `v0:${timestamp}:${req.rawBody}`;
   const computedSig = `v0=${crypto
     .createHmac('sha256', SLACK_SIGNING_SECRET)
     .update(baseString)
