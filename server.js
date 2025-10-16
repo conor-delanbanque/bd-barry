@@ -119,8 +119,15 @@ app.command('/add-note', async ({ ack, respond, command }) => {
         },
         associations: [
           {
-            types: [{ associationCategory: 'HUBSPOT_DEFINED', associationType: 'note_related_to_contact', associationTypeId: 202 }],
-            id: contactId,
+            to: {
+              id: contactId,
+            },
+            types: [
+              {
+                associationCategory: 'HUBSPOT_DEFINED',
+                associationTypeId: 202,
+              },
+            ],
           },
         ],
       },
