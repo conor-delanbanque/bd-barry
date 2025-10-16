@@ -78,6 +78,7 @@ app.command('/add-note', async ({ ack, respond, command }) => {
   }
 
   try {
+    console.log('Searching for contact:', email);
     const searchResponse = await axios.post(
       'https://api.hubapi.com/crm/v3/objects/contacts/search',
       {
@@ -99,6 +100,7 @@ app.command('/add-note', async ({ ack, respond, command }) => {
       }
     );
 
+    console.log('Search response:', searchResponse.data);
     const contacts = searchResponse.data.results;
     if (contacts.length === 0) {
       await respond(`❌ Contact with email ${email} not found.`);
@@ -106,7 +108,9 @@ app.command('/add-note', async ({ ack, respond, command }) => {
     }
 
     const contactId = contacts[0].id;
+    console.log('Found contact ID:', contactId);
 
+    console.log('Creating note:', noteText);
     await axios.post(
       'https://api.hubapi.com/crm/v3/objects/notes',
       {
@@ -127,8 +131,8 @@ app.command('/add-note', async ({ ack, respond, command }) => {
 
     await respond(`✅ Note added to ${email}:\n"${noteText}"`);
   } catch (error) {
-    console.error('Error adding note:', error.message);
-    await respond(`❌ Error: ${error.message}`);
+    console.error('Error adding note:', error.response?.data || error.message);
+    await respond(`❌ Error: ${error.response?.data?.message || error.message}`);
   }
 });
 
