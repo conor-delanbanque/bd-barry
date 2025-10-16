@@ -116,6 +116,7 @@ app.command('/add-note', async ({ ack, respond, command }) => {
       {
         properties: {
           hs_note_body: noteText,
+          hs_timestamp: new Date().toISOString(),
         },
         associations: [
           {
