@@ -39,7 +39,7 @@ const verifySlackRequest = (req, res, next) => {
     .update(baseString)
     .digest('hex')}`;
 
-  if (!crypto.timingSafeEqual(signature, computedSig)) {
+  if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(computedSig))) {
     return res.status(401).send('Invalid signature');
   }
 
