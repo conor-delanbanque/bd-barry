@@ -27,15 +27,18 @@ const tokenStore = new Map();
 
 // Slack request verification middleware
 const verifySlackRequest = (req, res, next) => {
+  console.log('=== Verifying Slack request ===');
   const timestamp = req.headers['x-slack-request-timestamp'];
   const signature = req.headers['x-slack-signature'];
 
   if (!timestamp || !signature) {
+    console.log('❌ Missing timestamp or signature');
     return res.status(400).send('Missing timestamp or signature');
   }
 
   const time = Math.floor(Date.now() / 1000);
   if (Math.abs(time - timestamp) > 300) {
+    console.log('❌ Request timestamp out of range');
     return res.status(400).send('Request timestamp out of range');
   }
 
@@ -45,10 +48,15 @@ const verifySlackRequest = (req, res, next) => {
     .update(baseString)
     .digest('hex')}`;
 
+  console.log('Expected sig:', computedSig);
+  console.log('Received sig:', signature);
+
   if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(computedSig))) {
+    console.log('❌ Invalid signature');
     return res.status(401).send('Invalid signature');
   }
 
+  console.log('✅ Signature verified');
   next();
 };
 
@@ -100,11 +108,14 @@ app.get('/slack/oauth_redirect', async (req, res) => {
 
 // All Slack interactions go through /slack/events
 app.post('/slack/events', verifySlackRequest, async (req, res) => {
+  console.log('=== /slack/events request received ===');
+  console.log('Body:', JSON.stringify(req.body, null, 2));
+  
   const { type, challenge, command, text, team_id, user_id, response_url } = req.body;
 
   // Handle Slack URL verification
   if (type === 'url_verification') {
-    console.log('Slack URL verification received');
+    console.log('✅ Slack URL verification - responding with challenge');
     return res.status(200).json({ challenge });
   }
 
