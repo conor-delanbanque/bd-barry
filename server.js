@@ -7,13 +7,19 @@ dotenv.config();
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
   signingSecret: process.env.SLACK_SIGNING_SECRET,
+  endpoints: {
+    events: '/slack/events',
+    commands: '/slack/commands'
+  }
 });
 
 const HUBSPOT_TOKEN = process.env.HUBSPOT_TOKEN;
 
 // /pipeline-summary command
 app.command('/pipeline-summary', async ({ ack, respond }) => {
+  console.log('>>> /pipeline-summary command received');
   await ack();
+  console.log('>>> Command acknowledged');
 
   if (!HUBSPOT_TOKEN) {
     await respond('HubSpot token not configured.');
@@ -149,5 +155,6 @@ app.command('/follow-up', async ({ ack, respond, command }) => {
 // Start the app
 (async () => {
   await app.start(process.env.PORT || 3000);
-  console.log('⚡️ BD Barry is running!');
+  console.log('⚡️ BD Barry is running on port', process.env.PORT || 3000);
+  console.log('Listening on /slack/events');
 })();
