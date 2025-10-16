@@ -95,10 +95,14 @@ app.get('/slack/oauth_redirect', async (req, res) => {
 
 // Slash command handler
 app.post('/slack/commands', verifySlackRequest, async (req, res) => {
+  console.log('Slash command received:', req.body.command);
   const { command, text, team_id, user_id, channel_id, response_url } = req.body;
   const token = tokenStore.get(team_id);
 
+  console.log('Team ID:', team_id, 'Token exists:', !!token);
+
   if (!token) {
+    console.log('No token found for team:', team_id);
     return res.status(403).send('Bot not installed for this workspace');
   }
 
