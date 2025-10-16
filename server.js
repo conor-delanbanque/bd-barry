@@ -16,7 +16,7 @@ const HUBSPOT_TOKEN = process.env.HUBSPOT_TOKEN;
 const REDIRECT_URL = process.env.REDIRECT_URL;
 const PORT = process.env.PORT || 3000;
 
-// In-memory store for tokens (use a database in production)
+// In-memory store for tokens
 const tokenStore = new Map();
 
 // Slack request verification middleware
@@ -49,7 +49,6 @@ const verifySlackRequest = (req, res, next) => {
 // OAuth2.0 redirect handler
 app.get('/slack/oauth_redirect', async (req, res) => {
   const code = req.query.code;
-  const state = req.query.state;
 
   if (!code) {
     return res.status(400).send('Missing authorization code');
@@ -69,7 +68,7 @@ app.get('/slack/oauth_redirect', async (req, res) => {
       return res.status(400).send(`OAuth failed: ${response.data.error}`);
     }
 
-    const { team_id, access_token, user_id } = response.data;
+    const { team_id, access_token } = response.data;
     tokenStore.set(team_id, access_token);
 
     res.send(`
@@ -95,40 +94,43 @@ app.get('/slack/oauth_redirect', async (req, res) => {
 
 // All Slack interactions go through /slack/events
 app.post('/slack/events', verifySlackRequest, async (req, res) => {
-  const { type, challenge, command, text, team_id, user_id, channel_id, response_url } = req.body;
+  const { type, challenge, command, text, team_id, user_id, response_url } = req.body;
 
-  // Slack URL verification
+  // Handle Slack URL verification
   if (type === 'url_verification') {
-    console.log('Slack verification received');
+    console.log('Slack URL verification received');
     return res.status(200).json({ challenge });
   }
 
   // Handle slash commands
-  if (type === 'command' || command) {
+  if (command) {
     console.log('Slash command received:', command);
     const token = tokenStore.get(team_id);
 
-    console.log('Team ID:', team_id, 'Token exists:', !!token);
-
     if (!token) {
       console.log('No token found for team:', team_id);
-      return res.status(403).json({ error: 'Bot not installed for this workspace' });
+      return res.status(200).json({ text: 'Bot not installed for this workspace' });
     }
 
-    res.status(200).json({ ok: true });
+    res.status(200).json({});
 
-  try {
-    if (command === '/pipeline-summary') {
-      await handlePipelineSummary(response_url, team_id, user_id);
-    } else if (command === '/add-note') {
-      await handleAddNote(response_url, text, team_id);
-    } else if (command === '/follow-up') {
-      await handleFollowUp(response_url, text, team_id, user_id);
+    try {
+      if (command === '/pipeline-summary') {
+        await handlePipelineSummary(response_url, team_id, user_id);
+      } else if (command === '/add-note') {
+        await handleAddNote(response_url, text, team_id);
+      } else if (command === '/follow-up') {
+        await handleFollowUp(response_url, text, team_id, user_id);
+      }
+    } catch (error) {
+      console.error(`Error handling ${command}:`, error.message);
+      await sendSlackMessage(response_url, `❌ Error: ${error.message}`);
     }
-  } catch (error) {
-    console.error(`Error handling ${command}:`, error.message);
-    await sendSlackMessage(response_url, `❌ Error: ${error.message}`);
+
+    return;
   }
+
+  res.status(200).json({});
 });
 
 // Handler: /pipeline-summary
@@ -136,7 +138,7 @@ async function handlePipelineSummary(responseUrl, teamId, userId) {
   if (!HUBSPOT_TOKEN) {
     await sendSlackMessage(
       responseUrl,
-      'HubSpot token not configured. Contact your admin to set HUBSPOT_TOKEN.'
+      'HubSpot token not configured. Contact your admin.'
     );
     return;
   }
@@ -270,7 +272,7 @@ async function handleFollowUp(responseUrl, text, teamId, userId) {
 
   await sendSlackMessage(
     responseUrl,
-    `📅 Follow-up reminder set for ${email}\nScheduled: ${followUpDate.toDateString()}\n\n_Note: In production, this would trigger an automated reminder._`
+    `📅 Follow-up reminder set for ${email}\nScheduled: ${followUpDate.toDateString()}`
   );
 }
 
@@ -285,13 +287,6 @@ async function sendSlackMessage(responseUrl, text) {
 // Health check
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'OK' });
-});
-
-// Debug endpoint - test if Slack can reach us
-app.post('/slack/commands/test', (req, res) => {
-  console.log('TEST endpoint hit');
-  console.log('Body:', req.body);
-  res.status(200).json({ ok: true, message: 'Test received' });
 });
 
 // Start server
