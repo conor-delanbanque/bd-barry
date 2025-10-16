@@ -1,4 +1,5 @@
 const express = require('express');
+const bodyParser = require('body-parser');
 const axios = require('axios');
 const dotenv = require('dotenv');
 const crypto = require('crypto');
@@ -7,8 +8,9 @@ dotenv.config();
 
 const app = express();
 
-// Parse JSON requests
-app.use(express.json());
+// Parse both JSON and URL-encoded form data
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
 
 // Environment variables
 const SLACK_CLIENT_ID = process.env.SLACK_CLIENT_ID;
@@ -23,38 +25,26 @@ const tokenStore = new Map();
 
 // Slack request verification middleware
 const verifySlackRequest = (req, res, next) => {
-  console.log('=== Verifying Slack request ===');
   const timestamp = req.headers['x-slack-request-timestamp'];
   const signature = req.headers['x-slack-signature'];
 
   if (!timestamp || !signature) {
-    console.log('❌ Missing timestamp or signature');
     return res.status(400).send('Missing timestamp or signature');
   }
 
   const time = Math.floor(Date.now() / 1000);
   if (Math.abs(time - timestamp) > 300) {
-    console.log('❌ Request timestamp out of range');
     return res.status(400).send('Request timestamp out of range');
   }
 
-  // Use JSON.stringify of parsed body instead of raw body
   const baseString = `v0:${timestamp}:${JSON.stringify(req.body)}`;
   const computedSig = `v0=${crypto
     .createHmac('sha256', SLACK_SIGNING_SECRET)
     .update(baseString)
     .digest('hex')}`;
 
-  console.log('Timestamp:', timestamp);
-  console.log('Body:', JSON.stringify(req.body));
-  console.log('Expected sig:', computedSig);
-  console.log('Received sig:', signature);
-
   if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(computedSig))) {
-    console.log('❌ Invalid signature - allowing anyway for debugging');
-    // Don't block - let it through so we can see what happens
-  } else {
-    console.log('✅ Signature verified');
+    return res.status(401).send('Invalid signature');
   }
 
   next();
@@ -106,56 +96,12 @@ app.get('/slack/oauth_redirect', async (req, res) => {
   }
 });
 
-// All Slack interactions go through /slack/events
-app.post('/slack/events', verifySlackRequest, async (req, res) => {
-  console.log('=== /slack/events request received ===');
-  console.log('Body:', JSON.stringify(req.body, null, 2));
-  
-  const { type, challenge, command, text, team_id, user_id, response_url } = req.body;
-
-  // Handle Slack URL verification
-  if (type === 'url_verification') {
-    console.log('✅ Slack URL verification - responding with challenge');
-    return res.status(200).json({ challenge });
-  }
-
-  // Handle slash commands
-  if (command) {
-    console.log('Slash command received:', command);
-    const token = tokenStore.get(team_id);
-
-    if (!token) {
-      console.log('No token found for team:', team_id);
-      return res.status(200).json({ text: 'Bot not installed for this workspace' });
-    }
-
-    res.status(200).json({});
-
-    try {
-      if (command === '/pipeline-summary') {
-        await handlePipelineSummary(response_url, team_id, user_id);
-      } else if (command === '/add-note') {
-        await handleAddNote(response_url, text, team_id);
-      } else if (command === '/follow-up') {
-        await handleFollowUp(response_url, text, team_id, user_id);
-      }
-    } catch (error) {
-      console.error(`Error handling ${command}:`, error.message);
-      await sendSlackMessage(response_url, `❌ Error: ${error.message}`);
-    }
-
-    return;
-  }
-
-  res.status(200).json({});
-});
-
-// Fallback for slash commands (in case they're sent here instead)
+// Slash command handler
 app.post('/slack/commands', verifySlackRequest, async (req, res) => {
-  console.log('=== /slack/commands request received ===');
-  console.log('Body:', JSON.stringify(req.body, null, 2));
-  
   const { command, text, team_id, user_id, response_url } = req.body;
+
+  console.log('Slash command received:', command, 'text:', text);
+
   const token = tokenStore.get(team_id);
 
   if (!token) {
@@ -163,7 +109,7 @@ app.post('/slack/commands', verifySlackRequest, async (req, res) => {
     return res.status(200).json({ text: 'Bot not installed for this workspace' });
   }
 
-  res.status(200).json({});
+  res.status(200).send('');
 
   try {
     if (command === '/pipeline-summary') {
@@ -338,5 +284,4 @@ app.get('/health', (req, res) => {
 // Start server
 app.listen(PORT, () => {
   console.log(`BD Barry running on port ${PORT}`);
-  console.log(`OAuth redirect: ${REDIRECT_URL}/slack/oauth_redirect`);
 });
