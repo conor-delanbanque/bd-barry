@@ -1,0 +1,26 @@
+{
+  "name": "bd-barry",
+  "version": "1.0.0",
+  "description": "Slack bot for sales pipeline management",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "axios": "^1.6.0",
+    "dotenv": "^16.3.1"
+  }
+}
+```
+5. Click **"Commit changes"**
+
+---
+
+6. Click **"Add file"** → **"Create new file"** again
+7. Name it: `.gitignore`
+8. Paste:
+```
+node_modules/
+.env
+.DS_Store
